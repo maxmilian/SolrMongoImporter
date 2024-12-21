@@ -1,37 +1,34 @@
 package org.apache.solr.handler.dataimport;
 
+// MongoDB imports
+import com.mongodb.client.*;
+import com.mongodb.ConnectionString;
+import com.mongodb.MongoClientSettings;
+import com.mongodb.MongoCredential;
 
-import com.mongodb.*;
-import com.mongodb.util.JSON;
+import org.bson.Document;
+
+// Logging imports
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.net.UnknownHostException;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.*;
+// Java util imports
+import java.util.Map;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Properties;
 
+// Solr imports
 import static org.apache.solr.handler.dataimport.DataImportHandlerException.SEVERE;
 import static org.apache.solr.handler.dataimport.DataImportHandlerException.wrapAndThrow;
 
-/**
- * User: James
- * Date: 13/08/12
- * Time: 18:28
- * To change this template use File | Settings | File Templates.
- */
-
-
 public class MongoDataSource extends DataSource<Iterator<Map<String, Object>>> {
-
-    private static final Logger LOG = LoggerFactory.getLogger(TemplateTransformer.class);
-
-    private DBCollection mongoCollection;
-    private DB mongoDb;
-    private Mongo mongoConnection;
-
-    private DBCursor mongoCursor;
+    private static final Logger LOG = LoggerFactory.getLogger(MongoDataSource.class);
+ 
+    private MongoClient mongoClient;
+    private MongoDatabase mongoDb;
+    private MongoCollection<Document> mongoCollection;
+    private MongoCursor<Document> mongoCursor;
 
     @Override
     public void init(Context context, Properties initProps) {
@@ -40,45 +37,49 @@ public class MongoDataSource extends DataSource<Iterator<Map<String, Object>>> {
         String port = initProps.getProperty(PORT, "27017");
         String username = initProps.getProperty(USERNAME);
         String password = initProps.getProperty(PASSWORD);
+        String authSource = initProps.getProperty(AUTH_SOURCE, "admin"); 
 
         if (databaseName == null) {
-            throw new DataImportHandlerException(SEVERE
-                    , "Database must be supplied");
+            throw new DataImportHandlerException(SEVERE, "Database must be supplied");
         }
 
         try {
-            Mongo mongo = new Mongo(host, Integer.parseInt(port));
-            mongo.setReadPreference(ReadPreference.secondaryPreferred());
-
-            this.mongoConnection = mongo;
-            this.mongoDb = mongo.getDB(databaseName);
-
-            if (username != null) {
-                if (this.mongoDb.authenticate(username, password.toCharArray()) == false) {
-                    throw new DataImportHandlerException(SEVERE
-                            , "Mongo Authentication Failed");
-                }
+            MongoClientSettings.Builder settingsBuilder = MongoClientSettings.builder();
+            
+            if (username != null && password != null) {
+                MongoCredential credential = MongoCredential.createCredential(
+                    username,
+                    authSource,
+                    password.toCharArray()
+                );
+                
+                settingsBuilder.credential(credential);
+            }
+            
+            // 建立連接字串
+            ConnectionString connectionString = new ConnectionString(
+                String.format("mongodb://%s:%s", host, port)
+            );
+            
+            settingsBuilder.applyConnectionString(connectionString);
+            
+            MongoClientSettings settings = settingsBuilder.build();
+            this.mongoClient = MongoClients.create(settings);
+            this.mongoDb = mongoClient.getDatabase(databaseName);
+            
+            // 測試連接
+            try {
+                mongoDb.runCommand(new Document("ping", 1));
+                LOG.info("Successfully connected to MongoDB");
+            } catch (Exception e) {
+                throw new DataImportHandlerException(SEVERE, 
+                    "Failed to connect to MongoDB: " + e.getMessage(), e);
             }
 
-        } catch (UnknownHostException e) {
-            throw new DataImportHandlerException(SEVERE
-                    , "Unable to connect to Mongo");
+        } catch (Exception e) {
+            throw new DataImportHandlerException(SEVERE, 
+                "Unable to connect to MongoDB: " + e.getMessage(), e);
         }
-    }
-
-    @Override
-    public Iterator<Map<String, Object>> getData(String query) {
-
-        DBObject queryObject = (DBObject) JSON.parse(query);
-        LOG.debug("Executing MongoQuery: " + query.toString());
-
-        long start = System.currentTimeMillis();
-        mongoCursor = this.mongoCollection.find(queryObject);
-        LOG.trace("Time taken for mongo :"
-                + (System.currentTimeMillis() - start));
-
-        ResultSetIterator resultSet = new ResultSetIterator(mongoCursor);
-        return resultSet.getIterator();
     }
 
     public Iterator<Map<String, Object>> getData(String query, String collection) {
@@ -86,29 +87,34 @@ public class MongoDataSource extends DataSource<Iterator<Map<String, Object>>> {
         return getData(query);
     }
 
+    @Override
+    public Iterator<Map<String, Object>> getData(String query) {
+        try {
+            Document queryObject = Document.parse(query);
+            LOG.debug("Executing MongoQuery: " + query);
+
+            long start = System.currentTimeMillis();
+            mongoCursor = this.mongoCollection.find(queryObject).iterator();
+            LOG.trace("Time taken for mongo: " + (System.currentTimeMillis() - start));
+
+            return new ResultSetIterator(mongoCursor).getIterator();
+        } catch (Exception e) {
+            throw new DataImportHandlerException(SEVERE, 
+                "Error executing query: " + e.getMessage(), e);
+        }
+    }
+
     private class ResultSetIterator {
-        DBCursor MongoCursor;
+        private final MongoCursor<Document> mongoCursor;
+        private final Iterator<Map<String, Object>> rSetIterator;
 
-        Iterator<Map<String, Object>> rSetIterator;
-
-        public ResultSetIterator(DBCursor MongoCursor) {
-            this.MongoCursor = MongoCursor;
-
-
-            rSetIterator = new Iterator<Map<String, Object>>() {
-                public boolean hasNext() {
-                    return hasnext();
-                }
-
-                public Map<String, Object> next() {
-                    return getARow();
-                }
-
-                public void remove() {/* do nothing */
-                }
+        public ResultSetIterator(MongoCursor<Document> mongoCursor) {
+            this.mongoCursor = mongoCursor;
+            this.rSetIterator = new Iterator<Map<String, Object>>() {
+                public boolean hasNext() { return hasnext(); }
+                public Map<String, Object> next() { return getARow(); }
+                public void remove() { /* do nothing */ }
             };
-
-
         }
 
         public Iterator<Map<String, Object>> getIterator() {
@@ -116,34 +122,24 @@ public class MongoDataSource extends DataSource<Iterator<Map<String, Object>>> {
         }
 
         private Map<String, Object> getARow() {
-            DBObject mongoObject = getMongoCursor().next();
-
-            Map<String, Object> result = new HashMap<String, Object>();
-            Set<String> keys = mongoObject.keySet();
-            Iterator<String> iterator = keys.iterator();
-
-
-            while (iterator.hasNext()) {
-                String key = iterator.next();
-                Object innerObject = mongoObject.get(key);
-
-                result.put(key, innerObject);
+            Document doc = mongoCursor.next();
+            Map<String, Object> result = new HashMap<>();
+            for (String key : doc.keySet()) {
+                result.put(key, doc.get(key));
             }
-
             return result;
         }
 
         private boolean hasnext() {
-            if (MongoCursor == null)
-                return false;
+            if (mongoCursor == null) return false;
             try {
-                if (MongoCursor.hasNext()) {
+                if (mongoCursor.hasNext()) {
                     return true;
                 } else {
                     close();
                     return false;
                 }
-            } catch (MongoException e) {
+            } catch (Exception e) {
                 close();
                 wrapAndThrow(SEVERE, e);
                 return false;
@@ -152,18 +148,11 @@ public class MongoDataSource extends DataSource<Iterator<Map<String, Object>>> {
 
         private void close() {
             try {
-                if (MongoCursor != null)
-                    MongoCursor.close();
+                if (mongoCursor != null) mongoCursor.close();
             } catch (Exception e) {
-                LOG.warn("Exception while closing result set", e);
-            } finally {
-                MongoCursor = null;
+                LOG.warn("Exception while closing cursor", e);
             }
         }
-    }
-
-    private DBCursor getMongoCursor() {
-        return this.mongoCursor;
     }
 
     @Override
@@ -171,18 +160,15 @@ public class MongoDataSource extends DataSource<Iterator<Map<String, Object>>> {
         if (this.mongoCursor != null) {
             this.mongoCursor.close();
         }
-
-        if (this.mongoConnection != null) {
-            this.mongoConnection.close();
+        if (this.mongoClient != null) {
+            this.mongoClient.close();
         }
     }
-
 
     public static final String DATABASE = "database";
     public static final String HOST = "host";
     public static final String PORT = "port";
     public static final String USERNAME = "username";
     public static final String PASSWORD = "password";
-
+    public static final String AUTH_SOURCE = "authSource";
 }
-

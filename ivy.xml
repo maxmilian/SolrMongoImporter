@@ -5,11 +5,29 @@
         <conf name="compile" transitive="true" visibility="public"/>
     </configurations>
     <dependencies>
-        <dependency org="org.mongodb" name="mongo-java-driver" rev="2.11.1"
+        <!-- MongoDB Driver -->
+        <dependency org="org.mongodb" name="mongodb-driver-sync" rev="4.0.5"
                     conf="compile->default"/>
-        <dependency org="junit" name="junit" rev="4.3"
+                    
+        <!-- Solr Dependencies -->
+        <dependency org="org.apache.solr" name="solr-dataimporthandler" rev="8.5.2"
+                    conf="compile->default">
+            <exclude org="org.restlet.*"/>
+            <exclude org="org.restlet.jee"/>
+        </dependency>
+        
+        <dependency org="org.apache.solr" name="solr-core" rev="8.5.2"
+                    conf="compile->default">
+            <exclude org="org.restlet.*"/>
+            <exclude org="org.restlet.jee"/>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency org="org.slf4j" name="slf4j-api" rev="1.7.30"
                     conf="compile->default"/>
-        <dependency org="org.apache.solr" name="solr-dataimporthandler" rev="5.5.0"
+        
+        <!-- 添加 Log4j 實現 -->
+        <dependency org="org.apache.logging.log4j" name="log4j-slf4j-impl" rev="2.11.2"
                     conf="compile->default"/>
     </dependencies>
 </ivy-module>
